@@ -6,7 +6,7 @@ API_HASH = "2a6fbe5d5c92adf1b49f9667be3598c3"
 
 # --- BOT CONFIGURATION ---
 # Get this from @BotFather
-BOT_TOKEN = "8713194288:AAFRODfEDzh5wwN0lEGK9KBz3a2HY5Eblbs" 
+BOT_TOKEN = "8978249219:AAFz5VrmMNE_yFHeuD6y_vbi9r0BlIh5_UE" 
 
 # --- DATABASE CONFIGURATION ---
 # MongoDB Connection String (e.g., from MongoDB Atlas)
