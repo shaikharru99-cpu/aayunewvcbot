@@ -20,8 +20,7 @@ WELCOME_IMAGE = "https://i.ibb.co/ch8W4QmS/ARLTools.png"
 
 # --- LOGGING ---
 # Channel ID to send logs to (Start with -100). Set to None to disable.
-LOG_CHANNEL = -1003780351710
-
+LOG_CHANNEL = -1004337410413
 # --- PERMISSIONS & ADMINS ---
 # The absolute owner of the bot (Full Access - Cannot be removed by admins)
 OWNER_ID = 6360979950
