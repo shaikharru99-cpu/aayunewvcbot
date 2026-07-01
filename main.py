@@ -148,7 +148,7 @@ logging.getLogger("telethon").setLevel(logging.ERROR)
 class Database:
     def __init__(self):
         self.client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
-        self.db = self.client['telegram_bot_db44']
+        self.db = self.client['telegram_bot_db223344']
         self.sessions = self.db['sessions']
         self.settings = self.db['settings']
 
