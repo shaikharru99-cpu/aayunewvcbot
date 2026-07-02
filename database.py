@@ -80,4 +80,4 @@ class Database:
         return await self.users.count_documents({"verified": True})
 
 # Initialize database instance
-db = Database(MONGO_URI, "JoinBotDB")
+db = Database(MONGO_URI, "JoinBotDB7777")
