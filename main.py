@@ -36,18 +36,6 @@ from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 import motor.motor_asyncio
 
-# --- IMPORT CONFIGURATION ---
-try:
-    from config import API_ID, API_HASH, BOT_TOKEN, MONGO_URL, LOG_CHANNEL, ADMIN_IDS as ENV_ADMINS, OWNER_ID
-except ImportError:
-    print("❌ Critical Error: config.py not found or missing OWNER_ID! Please create it and define OWNER_ID.")
-    sys.exit(1)
-
-try:
-    from config import WELCOME_IMAGE
-except ImportError:
-    WELCOME_IMAGE = "https://i.ibb.co/0yZT5SFv/Auto-Rt-Lv-Tools.png"
-
 # --- CONSTANTS & EMOJI UI GRID ---
 EMOJIS = ["👍", "❤️", "🔥", "🎉", "😍", "🤩", "⚡️", "💯", "😎", "👏", "🥳", "🚀", "🤡", "🙏", "👀", "✍️"]
 DELAY_RANGE = (5, 15)
@@ -77,7 +65,6 @@ def build_emoji_keyboard(selected_emojis, mode, extra=""):
     buttons.append([Button.inline("❌ CANCEL", cancel_data)])
     return buttons
 
-# --- ADVANCED LOGGING SETUP ---
 class HumanReadableFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
@@ -144,11 +131,10 @@ root_logger.addHandler(console_handler)
 logger = logging.getLogger("ManagerBot")
 logging.getLogger("telethon").setLevel(logging.ERROR)
 
-# --- DATABASE HANDLER (MongoDB) ---
 class Database:
     def __init__(self):
         self.client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
-        self.db = self.client['telegram_bot_db223344']
+        self.db = self.client[DB_NAME]
         self.sessions = self.db['sessions']
         self.settings = self.db['settings']
 
@@ -237,7 +223,7 @@ active_userbots = {}
 login_states = {}
 GLOBAL_CONF = {}
 
-API_SEMAPHORE = asyncio.Semaphore(10) 
+API_SEMAPHORE = asyncio.Semaphore(15) 
 BANNED_ACCOUNTS = []
 
 async def mark_bot_banned(user_id, name, reason="Banned/Revoked"):
@@ -256,7 +242,6 @@ async def mark_bot_banned(user_id, name, reason="Banned/Revoked"):
 # --- MASTER BOT INSTANCE ---
 bot = TelegramClient('master_bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# --- HELPER FUNCTIONS ---
 async def log_to_channel(message):
     if LOG_CHANNEL:
         try:
@@ -308,10 +293,11 @@ def get_effective_emoji_list(chat_id):
         return e_spec
     return EMOJIS.copy()
 
-# --- USERBOT LOGIC: VIEWS & REACTIONS ---
+# --- USERBOT LOGIC: VIEWS & REACTIONS (OPTIMIZED FOR LIGHTNING SPEED) ---
 async def trigger_single_bot_engagement(client, peer_str, msg_id, action_type, emoji_list, index=0):
-    base_delay = random.uniform(0.5, 1.5)
-    stagger_delay = index * random.uniform(0.3, 0.8) 
+    # CRITICAL SPEED FIX: Swapped slow delays for instant, sub-second staggered offsets
+    base_delay = random.uniform(0.01, 0.05)
+    stagger_delay = index * 0.015  # Extremely quick spread to prevent socket blocks, feels instantaneous
     await asyncio.sleep(base_delay + stagger_delay)
     
     try:
@@ -390,8 +376,7 @@ async def join_channel_via_link(client, link):
 # --- USERBOT LOGIC: VC & LIVE ---
 async def get_active_call_for_bot(client, chat_id):
     """
-    🛠️ CRITICAL FIX: Per-Bot Cache Isolation.
-    Every bot manages its OWN Voice Chat token, guaranteeing 0% FROZEN_METHOD_INVALID errors.
+    🎙️ isolated voice call cache processor
     """
     if not hasattr(client, 'vc_call_cache'):
         client.vc_call_cache = {}
@@ -454,7 +439,6 @@ async def join_channel_live(client, chat_id):
             if "already in" in error_str or "already joined" in error_str: 
                 return True, "Already in the call"
             
-            # 🛠️ INSTANT RECOVERY: If the admin restarts the VC, drop the stale cache and wait for next loop to re-fetch
             if any(x in error_str for x in ["group call is invalid", "groupcall_invalid", "frozen", "method_invalid"]):
                 if hasattr(client, 'vc_call_cache'):
                     client.vc_call_cache.pop(chat_id, None) 
@@ -490,7 +474,7 @@ async def ban_notifier_engine():
 
 async def global_vc_manager():
     await asyncio.sleep(5) 
-    logger.info("⚙️ Starting Centralized Advanced VC Manager Engine...")
+    logger.info("⚙️ Centralized VC Swarm Manager Online")
     initialized_targets = set()
 
     async def process_ping(client, chat_id):
@@ -503,7 +487,6 @@ async def global_vc_manager():
             if not was_in_vc: 
                 logger.info(f"🎙️ [VC JOIN] 👤 [{bot_name}] ➜ Successfully joined VC in chat {chat_id}")
             client.in_vc[chat_id] = True
-            # 🛠️ AGGRESSIVE KEEP-ALIVE: Ping exactly every 15s to perfectly evade Telegram's 30s timeout!
             client.vc_cooldowns[chat_id] = datetime.now() + timedelta(seconds=15)
             
         elif "Flood wait error" in msg:
@@ -533,7 +516,6 @@ async def global_vc_manager():
                 client.in_vc[chat_id] = False
                 
             if "No Active VC" in human_reason or "EntityNotFound" in human_reason:
-                # If there's truly no VC, safely check every 30s without hitting rate limits
                 client.vc_cooldowns[chat_id] = datetime.now() + timedelta(seconds=30)
             else:
                 client.vc_cooldowns[chat_id] = datetime.now() + timedelta(seconds=15)
@@ -552,7 +534,6 @@ async def global_vc_manager():
                 if chat_id not in initialized_targets:
                     for idx, client in enumerate(active_userbots.values()):
                         if not hasattr(client, 'vc_cooldowns'): client.vc_cooldowns = {}
-                        # Stagger completely so bots join flawlessly
                         client.vc_cooldowns[chat_id] = now + timedelta(seconds=idx * 1.5)
                     initialized_targets.add(chat_id)
 
@@ -573,13 +554,11 @@ async def global_vc_manager():
                     
                     if now >= cooldown:
                         client.vc_cooldowns[chat_id] = now + timedelta(seconds=60) 
-                        # 🛠️ ASYNC SWARM: 90 bots ping independently without waiting for each other!
                         asyncio.create_task(process_ping(client, chat_id))
             
         except Exception as e:
             logger.error(f"VC Manager encountered a loop error: {e}")
         await asyncio.sleep(0.5)
-
 
 async def start_userbot(session_string, user_id, name, startup_delay=0):
     if startup_delay > 0: await asyncio.sleep(startup_delay)
@@ -621,7 +600,7 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
         client._vc_stop_flag = False
         active_userbots[me.id] = client
 
-        # --- EVENT: AUTO REACTION & VIEW INCREMENT ---
+        # --- EVENT: AUTO REACTION & VIEW INCREMENT (OPTIMIZED FOR INSTANT ACTIONS) ---
         @client.on(events.NewMessage(incoming=True))
         async def reaction_handler(event):
             if getattr(client, '_vc_stop_flag', False): return
@@ -635,8 +614,9 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
             active_list = list(active_userbots.keys())
             my_index = active_list.index(client.me.id) if client.me.id in active_list else 999
             
-            base_delay = random.uniform(1.0, 3.0)
-            stagger = my_index * random.uniform(0.5, 1.5)
+            # INSTANT SPEED BOOST: Drastically slashed limits to fire reactions almost concurrently
+            base_delay = random.uniform(0.01, 0.05)
+            stagger = my_index * 0.015  # Negligible incremental offset for instant swarm delivery
             await asyncio.sleep(base_delay + stagger)
             
             view_limit = get_effective_limit(event.chat_id, "view_limit")
@@ -690,7 +670,6 @@ async def start_handler(event):
         return await event.respond("⛔ **Access Denied.** You are not an admin.")
     await show_dashboard(event)
 
-
 async def show_dashboard(event, edit=False):
     active_count = len(active_userbots)
     targets_count = len(GLOBAL_CONF.get('target_chats', []))
@@ -729,7 +708,6 @@ async def callback_handler(event):
 
     data = event.data.decode('utf-8')
     await process_callback_data(event, data)
-
 
 async def process_callback_data(event, data):
     chat_id = event.chat_id
@@ -801,7 +779,6 @@ async def process_callback_data(event, data):
         await event.edit(f"✅ **Settings Updated!**\nTarget `{chat_id_target}` emoji set to: **RANDOM**",
                             buttons=[[Button.inline("🔙 Back to Chat Settings", f"t_menu_{chat_id_target}")]])
         return
-
 
     # --- OWNER-ONLY ROUTES PROTECTION ---
     if data in ["remove_menu", "clean_bots", "admin_menu", "add_admin_step", "rm_admin_menu", "clear_tgt", "set_limit_view", "set_limit_react", "set_limit_join"]:
@@ -1221,7 +1198,6 @@ async def process_callback_data(event, data):
         count = await reload_userbots()
         await msg.edit(f"✅ **Reload Complete!**\n\nActive Bots: {count}", buttons=[[Button.inline("🏠 Main Menu", b"main_menu")]])
 
-
 @bot.on(events.NewMessage)
 async def wizard_handler(event):
     if not is_admin(event.sender_id) or not event.text:
@@ -1533,8 +1509,8 @@ def global_exception_handler(loop, context):
     loop.default_exception_handler(context)
 
 async def main():
-    print("--- Manager Bot V3 Starting ---")
-    print("⏳ Waiting 15s for old Heroku dynos to terminate to prevent IP-Ban overlaps...")
+    print("--- Manager Bot Starting ---")
+    print("⏳ Waiting 15s for old dynos to terminate to avoid IP overlap conflicts...")
     await asyncio.sleep(15)
     
     loop = asyncio.get_event_loop()
