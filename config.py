@@ -1,30 +1,37 @@
 # --- TELEGRAM API CONFIGURATION ---
-# Get these from # --- TELEGRAM API CONFIGURATION ---
-# Get these from https://my.telegram.org
 API_ID = 39800351
 API_HASH = "2a6fbe5d5c92adf1b49f9667be3598c3"
 
 # --- BOT CONFIGURATION ---
-# Get this from @BotFather
 BOT_TOKEN = "8978249219:AAFz5VrmMNE_yFHeuD6y_vbi9r0BlIh5_UE" 
 
 # --- DATABASE CONFIGURATION ---
-# MongoDB Connection String (e.g., from MongoDB Atlas)
 MONGO_URL = "mongodb+srv://ArruBhai:NVPavPk34HtQ6RW1@cluster0.hhlnxa9.mongodb.net/?appName=Cluster0"
-
-# Configure the database name (Used to store sessions and settings)
 DB_NAME = "telegram_bot_db223344" 
 
 # --- ASSETS ---
 WELCOME_IMAGE = "https://i.ibb.co/ch8W4QmS/ARLTools.png"
 
 # --- LOGGING ---
-# Channel ID to send logs to (Start with -100). Set to None to disable.
 LOG_CHANNEL = -1004337410413
-# --- PERMISSIONS & ADMINS ---
-# The absolute owner of the bot (Full Access - Cannot be removed by admins)
-OWNER_ID = 6360979950
 
-# List of Admin User IDs who can control basic bot features (Engagement, joining VC, adding bots)
-# Admins cannot remove bots, change global limits, or wipe targets.
+# --- PERMISSIONS & ADMINS ---
+OWNER_ID = 6360979950
 ADMIN_IDS = [6360979950]
+
+# Try importing from external config to respect any external environment values
+try:
+    import config
+    API_ID = getattr(config, 'API_ID', API_ID)
+    API_HASH = getattr(config, 'API_HASH', API_HASH)
+    BOT_TOKEN = getattr(config, 'BOT_TOKEN', BOT_TOKEN)
+    MONGO_URL = getattr(config, 'MONGO_URL', MONGO_URL)
+    DB_NAME = getattr(config, 'DB_NAME', DB_NAME)
+    WELCOME_IMAGE = getattr(config, 'WELCOME_IMAGE', WELCOME_IMAGE)
+    LOG_CHANNEL = getattr(config, 'LOG_CHANNEL', LOG_CHANNEL)
+    OWNER_ID = getattr(config, 'OWNER_ID', OWNER_ID)
+    ADMIN_IDS = getattr(config, 'ADMIN_IDS', ADMIN_IDS)
+except ImportError:
+    pass
+
+ENV_ADMINS = ADMIN_IDS
