@@ -20,10 +20,10 @@ WELCOME_IMAGE = "https://i.ibb.co/ch8W4QmS/ARLTools.png"
 # --- LOGGING ---
 # Channel ID to send logs to (Start with -100). Set to None to disable.
 LOG_CHANNEL = -1004337410413
+
 # --- PERMISSIONS & ADMINS ---
 # The absolute owner of the bot (Full Access - Cannot be removed by admins)
 OWNER_ID = 6360979950
 
-# List of Admin User IDs who can control basic bot features (Engagement, joining VC, adding bots)
-# Admins cannot remove bots, change global limits, or wipe targets.
+# List of Admin User IDs who can control basic bot features
 ADMIN_IDS = [6360979950]
