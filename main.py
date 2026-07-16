@@ -1,33 +1,4 @@
-# --- TELEGRAM API CONFIGURATION ---
-# Get these from https://my.telegram.org
-API_ID = 39800351
-API_HASH = "2a6fbe5d5c92adf1b49f9667be3598c3"
-
-# --- BOT CONFIGURATION ---
-# Get this from @BotFather
-BOT_TOKEN = "8978249219:AAFz5VrmMNE_yFHeuD6y_vbi9r0BlIh5_UE" 
-
-# --- DATABASE CONFIGURATION ---
-# MongoDB Connection String (e.g., from MongoDB Atlas)
-MONGO_URL = "mongodb+srv://ArruBhai:NVPavPk34HtQ6RW1@cluster0.hhlnxa9.mongodb.net/?appName=Cluster0"
-
-# Configure the database name (Used to store sessions and settings)
-DB_NAME = "telegram_bot_db223344" 
-
-# --- ASSETS ---
-WELCOME_IMAGE = "https://i.ibb.co/ch8W4QmS/ARLTools.png"
-
-# --- LOGGING ---
-# Channel ID to send logs to (Start with -100). Set to None to disable.
-LOG_CHANNEL = -1004337410413
-# --- PERMISSIONS & ADMINS ---
-# The absolute owner of the bot (Full Access - Cannot be removed by admins)
-OWNER_ID = 6360979950
-
-# List of Admin User IDs who can control basic bot features (Engagement, joining VC, adding bots)
-# Admins cannot remove bots, change global limits, or wipe targets.
-ADMIN_IDS = [6360979950]
-
+# main.py
 import asyncio
 import logging
 import os
@@ -38,6 +9,16 @@ import json
 import re
 import signal
 from datetime import datetime, timedelta
+
+# --- IMPORT CONFIGURATION FROM config.py ---
+try:
+    from config import (
+        API_ID, API_HASH, BOT_TOKEN, MONGO_URL, DB_NAME, 
+        WELCOME_IMAGE, LOG_CHANNEL, OWNER_ID, ADMIN_IDS
+    )
+except ImportError:
+    print("❌ Critical Error: config.py not found or missing configuration variables!")
+    sys.exit(1)
 
 # --- HIDE UNRAISABLE ASYNCIO TRACEBACKS ---
 def custom_unraisablehook(unraisable):
@@ -66,19 +47,6 @@ from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 import motor.motor_asyncio
 
-# --- IMPORT CONFIGURATION ---
-try:
-    from config import API_ID, API_HASH, BOT_TOKEN, MONGO_URL, LOG_CHANNEL, ADMIN_IDS as ENV_ADMINS, OWNER_ID
-except ImportError:
-    # Use hardcoded fallbacks if config module doesn't exist yet (this script contains them already)
-    ENV_ADMINS = ADMIN_IDS
-
-try:
-    from config import WELCOME_IMAGE
-except ImportError:
-    WELCOME_IMAGE = "https://i.ibb.co/ch8W4QmS/ARLTools.png"
-
-# --- CONSTANTS & EMOJI UI GRID ---
 EMOJIS = ["👍", "❤️", "🔥", "🎉", "😍", "🤩", "⚡️", "💯", "😎", "👏", "🥳", "🚀", "🤡", "🙏", "👀", "✍️"]
 DELAY_RANGE = (5, 15)
 
@@ -107,7 +75,6 @@ def build_emoji_keyboard(selected_emojis, mode, extra=""):
     buttons.append([Button.inline("❌ CANCEL", cancel_data)])
     return buttons
 
-# --- ADVANCED LOGGING SETUP ---
 class HumanReadableFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
@@ -174,7 +141,6 @@ root_logger.addHandler(console_handler)
 logger = logging.getLogger("ManagerBot")
 logging.getLogger("telethon").setLevel(logging.ERROR)
 
-# --- DATABASE HANDLER (MongoDB) ---
 class Database:
     def __init__(self):
         self.client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
@@ -262,7 +228,6 @@ class Database:
 
 db = Database()
 
-# --- GLOBAL STATE ---
 active_userbots = {}
 login_states = {}
 GLOBAL_CONF = {}
@@ -298,7 +263,7 @@ async def refresh_global_config():
     global GLOBAL_CONF
     GLOBAL_CONF = await db.get_config()
     db_admins = GLOBAL_CONF.get("admins", [])
-    GLOBAL_CONF['all_admins'] = list(set(ENV_ADMINS + db_admins))
+    GLOBAL_CONF['all_admins'] = list(set(ADMIN_IDS + db_admins))
     logger.info(f"⚙️ Config Refreshed. Target Chats Monitored: {len(GLOBAL_CONF.get('target_chats', []))}")
 
 def is_owner(user_id): return user_id == OWNER_ID
@@ -338,9 +303,8 @@ def get_effective_emoji_list(chat_id):
         return e_spec
     return EMOJIS.copy()
 
-# --- USERBOT LOGIC: VIEWS & REACTIONS ---
 async def trigger_single_bot_engagement(client, peer_str, msg_id, action_type, emoji_list, index=0):
-    # CRITICAL SPEED OPTIMIZATION: Drastically reduced synthetic delay for instant reaction delivery!
+    # Optimized instant staggering delays (nearly instant!)
     base_delay = random.uniform(0.01, 0.05)
     stagger_delay = index * random.uniform(0.01, 0.03) 
     await asyncio.sleep(base_delay + stagger_delay)
@@ -398,7 +362,6 @@ async def process_one_time_engagement(link, count, action_type, emoji_list=None)
     action_text = "Views" if action_type == "view" else "Reactions"
     return True, f"✅ Successfully queued **{success_count}** {action_text} for processing."
 
-# --- USERBOT ACTION: JOIN VIA LINK ---
 async def join_channel_via_link(client, link):
     try:
         if '+' in link or 'joinchat' in link:
@@ -418,10 +381,8 @@ async def join_channel_via_link(client, link):
     except FloodWaitError as e: return False, f"FloodWait ({e.seconds}s)"
     except Exception as e: return False, str(e)[:50]
 
-# --- USERBOT LOGIC: VC & LIVE ---
 async def get_active_call_for_bot(client, chat_id):
     """
-    🛠️ CRITICAL FIX: Per-Bot Cache Isolation.
     Every bot manages its OWN Voice Chat token, guaranteeing 0% FROZEN_METHOD_INVALID errors.
     """
     if not hasattr(client, 'vc_call_cache'):
@@ -485,7 +446,6 @@ async def join_channel_live(client, chat_id):
             if "already in" in error_str or "already joined" in error_str: 
                 return True, "Already in the call"
             
-            # 🛠️ INSTANT RECOVERY: If the admin restarts the VC, drop the stale cache and wait for next loop to re-fetch
             if any(x in error_str for x in ["group call is invalid", "groupcall_invalid", "frozen", "method_invalid"]):
                 if hasattr(client, 'vc_call_cache'):
                     client.vc_call_cache.pop(chat_id, None) 
@@ -534,7 +494,6 @@ async def global_vc_manager():
             if not was_in_vc: 
                 logger.info(f"🎙️ [VC JOIN] 👤 [{bot_name}] ➜ Successfully joined VC in chat {chat_id}")
             client.in_vc[chat_id] = True
-            # 🛠️ AGGRESSIVE KEEP-ALIVE: Ping exactly every 15s to perfectly evade Telegram's 30s timeout!
             client.vc_cooldowns[chat_id] = datetime.now() + timedelta(seconds=15)
             
         elif "Flood wait error" in msg:
@@ -564,7 +523,6 @@ async def global_vc_manager():
                 client.in_vc[chat_id] = False
                 
             if "No Active VC" in human_reason or "EntityNotFound" in human_reason:
-                # If there's truly no VC, safely check every 30s without hitting rate limits
                 client.vc_cooldowns[chat_id] = datetime.now() + timedelta(seconds=30)
             else:
                 client.vc_cooldowns[chat_id] = datetime.now() + timedelta(seconds=15)
@@ -583,7 +541,6 @@ async def global_vc_manager():
                 if chat_id not in initialized_targets:
                     for idx, client in enumerate(active_userbots.values()):
                         if not hasattr(client, 'vc_cooldowns'): client.vc_cooldowns = {}
-                        # Stagger completely so bots join flawlessly
                         client.vc_cooldowns[chat_id] = now + timedelta(seconds=idx * 1.5)
                     initialized_targets.add(chat_id)
 
@@ -604,13 +561,11 @@ async def global_vc_manager():
                     
                     if now >= cooldown:
                         client.vc_cooldowns[chat_id] = now + timedelta(seconds=60) 
-                        # 🛠️ ASYNC SWARM: 90 bots ping independently without waiting for each other!
                         asyncio.create_task(process_ping(client, chat_id))
             
         except Exception as e:
             logger.error(f"VC Manager encountered a loop error: {e}")
         await asyncio.sleep(0.5)
-
 
 async def start_userbot(session_string, user_id, name, startup_delay=0):
     if startup_delay > 0: await asyncio.sleep(startup_delay)
@@ -666,7 +621,7 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
             active_list = list(active_userbots.keys())
             my_index = active_list.index(client.me.id) if client.me.id in active_list else 999
             
-            # CRITICAL SPEED OPTIMIZATION: Drastically reduced synthetic delay for instant reaction execution!
+            # Optimized instant staggered trigger for target automations!
             base_delay = random.uniform(0.01, 0.05)
             stagger = my_index * random.uniform(0.01, 0.03)
             await asyncio.sleep(base_delay + stagger)
@@ -709,14 +664,12 @@ async def reload_userbots():
     await refresh_global_config()
     sessions = await db.get_all_sessions()
     
-    # Minimize startup delay for faster batch logins
     tasks = [start_userbot(s['session_string'], s['user_id'], s.get('name', 'Unknown'), i * 0.1) for i, s in enumerate(sessions)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     successful_bots = [r for r in results if r is not None and not isinstance(r, Exception)]
     
     return len(successful_bots)
 
-# --- MASTER BOT INTERFACE ---
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     if not is_admin(event.sender_id):
@@ -835,7 +788,6 @@ async def process_callback_data(event, data):
                             buttons=[[Button.inline("🔙 Back to Chat Settings", f"t_menu_{chat_id_target}")]])
         return
 
-
     # --- OWNER-ONLY ROUTES PROTECTION ---
     if data in ["remove_menu", "clean_bots", "admin_menu", "add_admin_step", "rm_admin_menu", "clear_tgt", "set_limit_view", "set_limit_react", "set_limit_join"]:
         if not is_owner(event.sender_id):
@@ -905,7 +857,7 @@ async def process_callback_data(event, data):
         await event.edit(text, buttons=buttons)
 
     elif data == "menu_settings":
-        text = "⚙️ **𝗦𝘆𝘀𝘁𝗲  𝗦𝗲𝘁𝘁𝗶𝗻𝗴𝘀**\nConfigure admins and view statistics."
+        text = "⚙️ **𝗦𝘆𝘀𝘁𝗲𝗺 𝗦𝗲𝘁𝘁𝗶𝗻𝗴𝘀**\nConfigure admins and view statistics."
         buttons = []
         if is_owner(event.sender_id):
             buttons.append([Button.inline("👥 Admins", b"admin_menu"), Button.inline("📊 Statistics", b"stats_menu")])
@@ -1076,7 +1028,7 @@ async def process_callback_data(event, data):
                 "selected_emojis": current_emojis
             }
             await event.edit(
-                f"🎭 **Set Specific Emoji for Target**\n\nClick to toggle. Select multiple to automatically divide reactions among bots!",
+                f"🎭 **Set Specific Emoji for Target**\n\nClick to toggle. Select multiple to divide reactions among bots!",
                 buttons=build_emoji_keyboard(current_emojis, "tgt", str(chat_id_target))
             )
         else:
@@ -1112,7 +1064,6 @@ async def process_callback_data(event, data):
         await event.answer("Targets cleared! Monitoring ALL channels bots are in.", alert=True)
         return await process_callback_data(event, "target_menu")
 
-    # --- STATISTICS ---
     elif data == "stats_menu":
         try:
             await event.delete()
@@ -1153,7 +1104,6 @@ async def process_callback_data(event, data):
                 "Type /cancel to abort.")
         await event.edit(text, buttons=[[Button.inline("❌ Cancel", b"menu_tools")]])
 
-    # --- ADMIN MANAGEMENT (OWNER ONLY ROUTE PROTECTED ABOVE) ---
     elif data == "admin_menu":
         admins = GLOBAL_CONF.get('all_admins', [])
         text = "👥 **𝗔𝗱𝗺𝗶𝗻 𝗠𝗮𝗻𝗮𝗴𝗲𝗺𝗲𝗻𝘁**\n\nCurrent Admins:\n"
@@ -1173,7 +1123,7 @@ async def process_callback_data(event, data):
         admins = GLOBAL_CONF.get('all_admins', [])
         buttons = []
         for adm in admins:
-            if adm != event.sender_id and adm not in ENV_ADMINS and not is_owner(adm): 
+            if adm != event.sender_id and adm not in ADMIN_IDS and not is_owner(adm): 
                 buttons.append([Button.inline(f"❌ {adm}", f"rm_adm_{adm}")])
         buttons.append([Button.inline("🔙 Back", b"admin_menu")])
         await event.edit("Select Admin to Remove:", buttons=buttons)
@@ -1185,7 +1135,6 @@ async def process_callback_data(event, data):
         await event.answer(f"Removed Admin {adm_id}", alert=True)
         return await process_callback_data(event, "admin_menu")
 
-    # --- BOT MANAGEMENT ---
     elif data == "add_menu":
         await event.edit("➕ **𝗔𝗱𝗱 𝗡𝗲𝘄 𝗕𝗼𝘁**\nSelect login method:", buttons=[
             [Button.inline("📱 Phone Number", b"add_phone"), Button.inline("📝 Session", b"add_string")],
@@ -1384,7 +1333,7 @@ async def wizard_handler(event):
                 status, rmsg = await join_channel_via_link(client, text)
                 icon = "✅" if status else "❌"
                 results.append(f"{icon} **{client.me.first_name}**: {rmsg}")
-                await asyncio.sleep(random.uniform(0.1, 0.5)) # Reduced delay between joins
+                await asyncio.sleep(random.uniform(0.1, 0.5)) 
             
             report = f"📝 **Join Report**\n\n" + "\n".join(results)
             if len(report) > 4000: report = report[:4000] + "\n...(truncated)"
