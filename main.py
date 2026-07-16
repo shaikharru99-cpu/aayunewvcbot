@@ -36,6 +36,26 @@ from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 import motor.motor_asyncio
 
+try:
+    import config
+    API_ID = getattr(config, 'API_ID', API_ID)
+    API_HASH = getattr(config, 'API_HASH', API_HASH)
+    BOT_TOKEN = getattr(config, 'BOT_TOKEN', BOT_TOKEN)
+    MONGO_URL = getattr(config, 'MONGO_URL', MONGO_URL)
+    DB_NAME = getattr(config, 'DB_NAME', DB_NAME)
+    WELCOME_IMAGE = getattr(config, 'WELCOME_IMAGE', WELCOME_IMAGE)
+    LOG_CHANNEL = getattr(config, 'LOG_CHANNEL', LOG_CHANNEL)
+    OWNER_ID = getattr(config, 'OWNER_ID', OWNER_ID)
+    
+    ext_admins = getattr(config, 'ADMIN_IDS', None)
+    if ext_admins is not None:
+        ADMIN_IDS = ext_admins
+except Exception:
+    # Graceful fallback to default inline variables if config.py doesn't exist
+    pass
+
+ENV_ADMINS = ADMIN_IDS
+
 # --- CONSTANTS & EMOJI UI GRID ---
 EMOJIS = ["👍", "❤️", "🔥", "🎉", "😍", "🤩", "⚡️", "💯", "😎", "👏", "🥳", "🚀", "🤡", "🙏", "👀", "✍️"]
 DELAY_RANGE = (5, 15)
@@ -294,10 +314,10 @@ def get_effective_emoji_list(chat_id):
     return EMOJIS.copy()
 
 # --- USERBOT LOGIC: VIEWS & REACTIONS (OPTIMIZED FOR LIGHTNING SPEED) ---
+# --- USERBOT LOGIC: VIEWS & REACTIONS ---
 async def trigger_single_bot_engagement(client, peer_str, msg_id, action_type, emoji_list, index=0):
-    # CRITICAL SPEED FIX: Swapped slow delays for instant, sub-second staggered offsets
     base_delay = random.uniform(0.01, 0.05)
-    stagger_delay = index * 0.015  # Extremely quick spread to prevent socket blocks, feels instantaneous
+    stagger_delay = index * 0.015  # Instant staggered spreads
     await asyncio.sleep(base_delay + stagger_delay)
     
     try:
@@ -601,6 +621,7 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
         active_userbots[me.id] = client
 
         # --- EVENT: AUTO REACTION & VIEW INCREMENT (OPTIMIZED FOR INSTANT ACTIONS) ---
+        # --- EVENT: AUTO REACTION & VIEW INCREMENT ---
         @client.on(events.NewMessage(incoming=True))
         async def reaction_handler(event):
             if getattr(client, '_vc_stop_flag', False): return
@@ -614,9 +635,8 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
             active_list = list(active_userbots.keys())
             my_index = active_list.index(client.me.id) if client.me.id in active_list else 999
             
-            # INSTANT SPEED BOOST: Drastically slashed limits to fire reactions almost concurrently
             base_delay = random.uniform(0.01, 0.05)
-            stagger = my_index * 0.015  # Negligible incremental offset for instant swarm delivery
+            stagger = my_index * 0.015  # Slashed stagger for instant delivery
             await asyncio.sleep(base_delay + stagger)
             
             view_limit = get_effective_limit(event.chat_id, "view_limit")
