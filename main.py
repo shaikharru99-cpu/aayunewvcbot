@@ -10,16 +10,6 @@ import re
 import signal
 from datetime import datetime, timedelta
 
-# --- IMPORT CONFIGURATION FROM config.py ---
-try:
-    from config import (
-        API_ID, API_HASH, BOT_TOKEN, MONGO_URL, DB_NAME, 
-        WELCOME_IMAGE, LOG_CHANNEL, OWNER_ID, ADMIN_IDS
-    )
-except ImportError:
-    print("❌ Critical Error: config.py not found or missing configuration variables!")
-    sys.exit(1)
-
 # --- HIDE UNRAISABLE ASYNCIO TRACEBACKS ---
 def custom_unraisablehook(unraisable):
     err_msg = str(unraisable.exc_value)
@@ -47,6 +37,19 @@ from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 import motor.motor_asyncio
 
+# --- IMPORT CONFIGURATION ---
+try:
+    from config import API_ID, API_HASH, BOT_TOKEN, MONGO_URL, LOG_CHANNEL, ADMIN_IDS as ENV_ADMINS, OWNER_ID
+except ImportError:
+    print("❌ Critical Error: config.py not found or missing OWNER_ID! Please create it and define OWNER_ID.")
+    sys.exit(1)
+
+try:
+    from config import WELCOME_IMAGE
+except ImportError:
+    WELCOME_IMAGE = "https://i.ibb.co/0yZT5SFv/Auto-Rt-Lv-Tools.png"
+
+# --- CONSTANTS & EMOJI UI GRID ---
 EMOJIS = ["👍", "❤️", "🔥", "🎉", "😍", "🤩", "⚡️", "💯", "😎", "👏", "🥳", "🚀", "🤡", "🙏", "👀", "✍️"]
 DELAY_RANGE = (5, 15)
 
@@ -75,6 +78,7 @@ def build_emoji_keyboard(selected_emojis, mode, extra=""):
     buttons.append([Button.inline("❌ CANCEL", cancel_data)])
     return buttons
 
+# --- ADVANCED LOGGING SETUP ---
 class HumanReadableFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
@@ -141,10 +145,11 @@ root_logger.addHandler(console_handler)
 logger = logging.getLogger("ManagerBot")
 logging.getLogger("telethon").setLevel(logging.ERROR)
 
+# --- DATABASE HANDLER (MongoDB) ---
 class Database:
     def __init__(self):
         self.client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
-        self.db = self.client[DB_NAME]
+        self.db = self.client['telegram_bot_db223344']
         self.sessions = self.db['sessions']
         self.settings = self.db['settings']
 
@@ -228,6 +233,7 @@ class Database:
 
 db = Database()
 
+# --- GLOBAL STATE ---
 active_userbots = {}
 login_states = {}
 GLOBAL_CONF = {}
@@ -263,7 +269,7 @@ async def refresh_global_config():
     global GLOBAL_CONF
     GLOBAL_CONF = await db.get_config()
     db_admins = GLOBAL_CONF.get("admins", [])
-    GLOBAL_CONF['all_admins'] = list(set(ADMIN_IDS + db_admins))
+    GLOBAL_CONF['all_admins'] = list(set(ENV_ADMINS + db_admins))
     logger.info(f"⚙️ Config Refreshed. Target Chats Monitored: {len(GLOBAL_CONF.get('target_chats', []))}")
 
 def is_owner(user_id): return user_id == OWNER_ID
@@ -303,10 +309,21 @@ def get_effective_emoji_list(chat_id):
         return e_spec
     return EMOJIS.copy()
 
+def log_reaction(name, user_id, emoji, chat, msg_id, mode):
+    """
+    Standardized, visually striking console logging optimized for Heroku dashboards.
+    Clearly shows active reactions per user to trace issues and account behaviors.
+    """
+    cleaned_chat = str(chat).replace("-100", "")
+    logger.info(
+        f"✨ [{mode} REACTION] 👤 Account: {name:<18} (ID: {user_id:<11}) "
+        f"➜ Reacted {emoji} | Chat: {cleaned_chat:<12} | Msg: {msg_id:<6}"
+    )
+
+# --- USERBOT LOGIC: VIEWS & REACTIONS ---
 async def trigger_single_bot_engagement(client, peer_str, msg_id, action_type, emoji_list, index=0):
-    # Optimized instant staggering delays (nearly instant!)
-    base_delay = random.uniform(0.01, 0.05)
-    stagger_delay = index * random.uniform(0.01, 0.03) 
+    base_delay = random.uniform(0.5, 1.5)
+    stagger_delay = index * random.uniform(0.3, 0.8) 
     await asyncio.sleep(base_delay + stagger_delay)
     
     try:
@@ -326,6 +343,17 @@ async def trigger_single_bot_engagement(client, peer_str, msg_id, action_type, e
         if action_type == "view":
             await client(functions.messages.GetMessagesViewsRequest(peer=entity, id=[msg_id], increment=True))
         elif action_type == "react":
+            if not hasattr(client, 'reacted_msgs'):
+                client.reacted_msgs = set()
+            
+            # Formulate a unique key for tracking
+            cache_key = f"{peer_str}_{msg_id}"
+            
+            # STRICT GUARD: Ensure 1 user 1 reaction per message (no double triggers, changes, or spamming)
+            if cache_key in client.reacted_msgs:
+                logger.info(f"⚠️ [REACTION SKIPPED] 👤 {client.me.first_name} already registered reaction to message {msg_id}.")
+                return False
+
             safe_emojis = emoji_list if (isinstance(emoji_list, list) and emoji_list) else EMOJIS
             react_emoji = random.choice(safe_emojis)
                 
@@ -333,6 +361,14 @@ async def trigger_single_bot_engagement(client, peer_str, msg_id, action_type, e
                 await client(functions.messages.SendReactionRequest(peer=entity, msg_id=msg_id, reaction=[types.ReactionEmoji(emoticon=react_emoji)]))
             except TypeError:
                 await client(functions.messages.SendReactionRequest(peer=entity, msg_id=msg_id, reaction=react_emoji))
+            
+            # Save state in bounded cache
+            client.reacted_msgs.add(cache_key)
+            if len(client.reacted_msgs) > 500:
+                client.reacted_msgs.remove(next(iter(client.reacted_msgs)))
+            
+            # Emit Heroku Log
+            log_reaction(client.me.first_name, client.me.id, react_emoji, peer_str, msg_id, "MANUAL")
                 
         return True
     except Exception as e:
@@ -362,6 +398,7 @@ async def process_one_time_engagement(link, count, action_type, emoji_list=None)
     action_text = "Views" if action_type == "view" else "Reactions"
     return True, f"✅ Successfully queued **{success_count}** {action_text} for processing."
 
+# --- USERBOT ACTION: JOIN VIA LINK ---
 async def join_channel_via_link(client, link):
     try:
         if '+' in link or 'joinchat' in link:
@@ -381,8 +418,10 @@ async def join_channel_via_link(client, link):
     except FloodWaitError as e: return False, f"FloodWait ({e.seconds}s)"
     except Exception as e: return False, str(e)[:50]
 
+# --- USERBOT LOGIC: VC & LIVE ---
 async def get_active_call_for_bot(client, chat_id):
     """
+    🛠️ CRITICAL FIX: Per-Bot Cache Isolation.
     Every bot manages its OWN Voice Chat token, guaranteeing 0% FROZEN_METHOD_INVALID errors.
     """
     if not hasattr(client, 'vc_call_cache'):
@@ -446,6 +485,7 @@ async def join_channel_live(client, chat_id):
             if "already in" in error_str or "already joined" in error_str: 
                 return True, "Already in the call"
             
+            # 🛠️ INSTANT RECOVERY: If the admin restarts the VC, drop the stale cache and wait for next loop to re-fetch
             if any(x in error_str for x in ["group call is invalid", "groupcall_invalid", "frozen", "method_invalid"]):
                 if hasattr(client, 'vc_call_cache'):
                     client.vc_call_cache.pop(chat_id, None) 
@@ -494,6 +534,7 @@ async def global_vc_manager():
             if not was_in_vc: 
                 logger.info(f"🎙️ [VC JOIN] 👤 [{bot_name}] ➜ Successfully joined VC in chat {chat_id}")
             client.in_vc[chat_id] = True
+            # 🛠️ AGGRESSIVE KEEP-ALIVE: Ping exactly every 15s to perfectly evade Telegram's 30s timeout!
             client.vc_cooldowns[chat_id] = datetime.now() + timedelta(seconds=15)
             
         elif "Flood wait error" in msg:
@@ -621,9 +662,8 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
             active_list = list(active_userbots.keys())
             my_index = active_list.index(client.me.id) if client.me.id in active_list else 999
             
-            # Optimized instant staggered trigger for target automations!
-            base_delay = random.uniform(0.01, 0.05)
-            stagger = my_index * random.uniform(0.01, 0.03)
+            base_delay = random.uniform(1.0, 3.0)
+            stagger = my_index * random.uniform(0.5, 1.5)
             await asyncio.sleep(base_delay + stagger)
             
             view_limit = get_effective_limit(event.chat_id, "view_limit")
@@ -634,6 +674,16 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
                 except Exception: pass
 
             if react_limit == 0 or my_index < react_limit:
+                if not hasattr(client, 'reacted_msgs'):
+                    client.reacted_msgs = set()
+                
+                # Compound Key to track uniquely: Chat_MessageID
+                cache_key = f"{event.chat_id}_{event.id}"
+                
+                # STRICT GUARD: Ensure 1 user 1 reaction per auto-post trigger
+                if cache_key in client.reacted_msgs:
+                    return
+
                 try:
                     chat_emoji_list = get_effective_emoji_list(event.chat_id)
                     emoji = random.choice(chat_emoji_list) if chat_emoji_list else random.choice(EMOJIS)
@@ -642,6 +692,15 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
                         await client(functions.messages.SendReactionRequest(peer=event.peer_id, msg_id=event.id, reaction=[types.ReactionEmoji(emoticon=emoji)]))
                     except TypeError:
                         await client(functions.messages.SendReactionRequest(peer=event.peer_id, msg_id=event.id, reaction=emoji))
+                    
+                    # Store in unique bounded reaction cache
+                    client.reacted_msgs.add(cache_key)
+                    if len(client.reacted_msgs) > 500:
+                        client.reacted_msgs.remove(next(iter(client.reacted_msgs)))
+
+                    # Clean Logging in Heroku Console
+                    log_reaction(client.me.first_name, client.me.id, emoji, event.chat_id, event.id, "AUTO")
+
                 except FloodWaitError as e: 
                     client.react_cooldown = datetime.now() + timedelta(seconds=e.seconds + 10)
                 except Exception as e:
@@ -664,12 +723,13 @@ async def reload_userbots():
     await refresh_global_config()
     sessions = await db.get_all_sessions()
     
-    tasks = [start_userbot(s['session_string'], s['user_id'], s.get('name', 'Unknown'), i * 0.1) for i, s in enumerate(sessions)]
+    tasks = [start_userbot(s['session_string'], s['user_id'], s.get('name', 'Unknown'), i * 0.5) for i, s in enumerate(sessions)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     successful_bots = [r for r in results if r is not None and not isinstance(r, Exception)]
     
     return len(successful_bots)
 
+# --- MASTER BOT INTERFACE ---
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     if not is_admin(event.sender_id):
@@ -715,7 +775,6 @@ async def callback_handler(event):
 
     data = event.data.decode('utf-8')
     await process_callback_data(event, data)
-
 
 async def process_callback_data(event, data):
     chat_id = event.chat_id
@@ -788,6 +847,7 @@ async def process_callback_data(event, data):
                             buttons=[[Button.inline("🔙 Back to Chat Settings", f"t_menu_{chat_id_target}")]])
         return
 
+
     # --- OWNER-ONLY ROUTES PROTECTION ---
     if data in ["remove_menu", "clean_bots", "admin_menu", "add_admin_step", "rm_admin_menu", "clear_tgt", "set_limit_view", "set_limit_react", "set_limit_join"]:
         if not is_owner(event.sender_id):
@@ -848,7 +908,7 @@ async def process_callback_data(event, data):
         await event.edit(text, buttons=buttons)
 
     elif data == "menu_tools":
-        text = "🎙️ **𝗖𝗵𝗮𝘁 & 𝗩𝗖 𝗧𝗼𝗼𝗹𝘀**\nForce bots to join/leave chats or voice calls."
+        text = "🎙️ **𝗖𝗵𝗮𝘁 & 𝗩𝗰 𝗧𝗼𝗼𝗹𝘀**\nForce bots to join/leave chats or voice calls."
         buttons = [
             [Button.inline("🔗 Join Chat", b"join_link_menu"), Button.inline("🎙️ Join VC", b"join_vc_menu")],
             [Button.inline("🚪 Leave Chat", b"leave_chat_menu")],
@@ -882,7 +942,7 @@ async def process_callback_data(event, data):
 
     # --- ENGAGEMENT: REACTIONS ---
     elif data == "reacts_menu":
-        text = "❤️ **𝗖𝘂𝘀𝘁𝗼𝗺 𝗥𝗲𝗮𝗰𝘁𝗶𝗼𝗻𝘀**\nSend reactions to a specific post."
+        text = "❤️ **𝗖𝘂𝘀𝘁𝗼𝗺 奠𝗮𝗰𝘁𝗶𝗼𝗻𝘀**\nSend reactions to a specific post."
         buttons = [
             [Button.inline("🎯 Send Reactions", b"setup_onetime_reacts")],
             [Button.inline("🔙 Back", b"menu_engagement")]
@@ -1028,7 +1088,7 @@ async def process_callback_data(event, data):
                 "selected_emojis": current_emojis
             }
             await event.edit(
-                f"🎭 **Set Specific Emoji for Target**\n\nClick to toggle. Select multiple to divide reactions among bots!",
+                f"🎭 **Set Specific Emoji for Target**\n\nClick to toggle. Select multiple to automatically divide reactions among bots!",
                 buttons=build_emoji_keyboard(current_emojis, "tgt", str(chat_id_target))
             )
         else:
@@ -1064,6 +1124,7 @@ async def process_callback_data(event, data):
         await event.answer("Targets cleared! Monitoring ALL channels bots are in.", alert=True)
         return await process_callback_data(event, "target_menu")
 
+    # --- STATISTICS ---
     elif data == "stats_menu":
         try:
             await event.delete()
@@ -1104,6 +1165,7 @@ async def process_callback_data(event, data):
                 "Type /cancel to abort.")
         await event.edit(text, buttons=[[Button.inline("❌ Cancel", b"menu_tools")]])
 
+    # --- ADMIN MANAGEMENT (OWNER ONLY ROUTE PROTECTED ABOVE) ---
     elif data == "admin_menu":
         admins = GLOBAL_CONF.get('all_admins', [])
         text = "👥 **𝗔𝗱𝗺𝗶𝗻 𝗠𝗮𝗻𝗮𝗴𝗲𝗺𝗲𝗻𝘁**\n\nCurrent Admins:\n"
@@ -1123,7 +1185,7 @@ async def process_callback_data(event, data):
         admins = GLOBAL_CONF.get('all_admins', [])
         buttons = []
         for adm in admins:
-            if adm != event.sender_id and adm not in ADMIN_IDS and not is_owner(adm): 
+            if adm != event.sender_id and adm not in ENV_ADMINS and not is_owner(adm): 
                 buttons.append([Button.inline(f"❌ {adm}", f"rm_adm_{adm}")])
         buttons.append([Button.inline("🔙 Back", b"admin_menu")])
         await event.edit("Select Admin to Remove:", buttons=buttons)
@@ -1135,6 +1197,7 @@ async def process_callback_data(event, data):
         await event.answer(f"Removed Admin {adm_id}", alert=True)
         return await process_callback_data(event, "admin_menu")
 
+    # --- BOT MANAGEMENT ---
     elif data == "add_menu":
         await event.edit("➕ **𝗔𝗱𝗱 𝗡𝗲𝘄 𝗕𝗼𝘁**\nSelect login method:", buttons=[
             [Button.inline("📱 Phone Number", b"add_phone"), Button.inline("📝 Session", b"add_string")],
@@ -1153,7 +1216,7 @@ async def process_callback_data(event, data):
         try:
             await event.delete()
             sessions = await db.get_all_sessions()
-            text = "📜 **𝗥𝗲𝗴𝗶𝘀𝘁𝗲𝗿𝗲𝗱 𝗔𝗰𝗰𝗼𝘂𝗻𝘁𝖘:**\n\n"
+            text = "📜 **𝗥𝗲𝗴𝗶𝘀𝘁𝗲𝗿𝗲𝗱 𝗔𝗰𝗰𝗼𝘂𝗻𝘁𝘀:**\n\n"
             for s in sessions:
                 status = "🟢" if s['user_id'] in active_userbots else "🔴"
                 text += f"{status} **{s.get('name', 'Unknown')}** (`{s['user_id']}`)\n"
@@ -1202,7 +1265,6 @@ async def process_callback_data(event, data):
         msg = await event.edit("🔄 **Reloading system...**")
         count = await reload_userbots()
         await msg.edit(f"✅ **Reload Complete!**\n\nActive Bots: {count}", buttons=[[Button.inline("🏠 Main Menu", b"main_menu")]])
-
 
 @bot.on(events.NewMessage)
 async def wizard_handler(event):
@@ -1333,7 +1395,7 @@ async def wizard_handler(event):
                 status, rmsg = await join_channel_via_link(client, text)
                 icon = "✅" if status else "❌"
                 results.append(f"{icon} **{client.me.first_name}**: {rmsg}")
-                await asyncio.sleep(random.uniform(0.1, 0.5)) 
+                await asyncio.sleep(random.uniform(1.0, 2.5))
             
             report = f"📝 **Join Report**\n\n" + "\n".join(results)
             if len(report) > 4000: report = report[:4000] + "\n...(truncated)"
@@ -1364,7 +1426,7 @@ async def wizard_handler(event):
                         results.append(f"❌ **{client.me.first_name}**: Resolve Failed")
                 except Exception as e:
                     results.append(f"❌ **{client.me.first_name}**: Error {str(e)[:30]}")
-                await asyncio.sleep(random.uniform(0.1, 0.5))
+                await asyncio.sleep(random.uniform(1.0, 2.5))
 
             report = f"📝 **VC Join Report**\n\n" + "\n".join(results)
             if len(report) > 4000: report = report[:4000] + "\n...(truncated)"
@@ -1386,7 +1448,7 @@ async def wizard_handler(event):
                     results.append(f"✅ **{client.me.first_name}**: Successfully Left")
                 except Exception as e:
                     results.append(f"❌ **{client.me.first_name}**: Error ({str(e)[:25]})")
-                await asyncio.sleep(random.uniform(0.1, 0.5))
+                await asyncio.sleep(random.uniform(1.0, 2.5))
                 
             report = f"📝 **Leave Chat Report**\n\n" + "\n".join(results)
             if len(report) > 4000: report = report[:4000] + "\n...(truncated)"
