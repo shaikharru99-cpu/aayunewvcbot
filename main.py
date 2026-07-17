@@ -244,6 +244,9 @@ async def mark_bot_banned(user_id, name, reason="Banned/Revoked"):
     if user_id in active_userbots:
         client = active_userbots[user_id]
         client._vc_stop_flag = True
+        # Terminate background worker task if active
+        if hasattr(client, 'worker_task') and client.worker_task:
+            client.worker_task.cancel()
         try: await client.disconnect()
         except: pass
         del active_userbots[user_id]
@@ -319,13 +322,12 @@ def log_reaction(name, user_id, emoji, chat, msg_id, mode):
         f"➜ Reacted {emoji} | Chat: {cleaned_chat:<12} | Msg: {msg_id:<6}"
     )
 
-# --- USERBOT LOGIC: VIEWS & REACTIONS ---
+# --- USERBOT LOGIC: VIEWS & REACTIONS (MANUAL ONE-TIME) ---
 async def trigger_single_bot_engagement(client, peer_str, msg_id, action_type, emoji_list, index=0):
-    # Micro-stagger to prevent concurrent socket write bottlenecks (practically instantaneous)
-    await asyncio.sleep(index * 0.02)
+    # Safe staggered execution across bots to prevent simultaneous Heroku IP block
+    await asyncio.sleep(index * 0.08)
     
     try:
-        # Cache resolved entities locally on each client to avoid expensive round-trip API calls
         if not hasattr(client, 'entity_cache'):
             client.entity_cache = {}
             
@@ -354,12 +356,10 @@ async def trigger_single_bot_engagement(client, peer_str, msg_id, action_type, e
             if not hasattr(client, 'reacted_msgs'):
                 client.reacted_msgs = set()
             
-            # Formulate a unique key for tracking
             cache_key_msg = f"{peer_str}_{msg_id}"
             
             # STRICT GUARD: Ensure 1 user 1 reaction per message
             if cache_key_msg in client.reacted_msgs:
-                logger.info(f"⚠️ [REACTION SKIPPED] 👤 {client.me.first_name} already registered reaction to message {msg_id}.")
                 return False
 
             safe_emojis = emoji_list if (isinstance(emoji_list, list) and emoji_list) else EMOJIS
@@ -370,18 +370,14 @@ async def trigger_single_bot_engagement(client, peer_str, msg_id, action_type, e
             except TypeError:
                 await client(functions.messages.SendReactionRequest(peer=entity, msg_id=msg_id, reaction=react_emoji))
             
-            # Save state in bounded cache
             client.reacted_msgs.add(cache_key_msg)
             if len(client.reacted_msgs) > 500:
                 client.reacted_msgs.remove(next(iter(client.reacted_msgs)))
             
-            # Emit Heroku Log
             log_reaction(client.me.first_name, client.me.id, react_emoji, peer_str, msg_id, "MANUAL")
                 
         return True
     except Exception as e:
-        if "Flood" not in str(e):
-            pass 
         return False
 
 async def process_one_time_engagement(link, count, action_type, emoji_list=None):
@@ -493,7 +489,6 @@ async def join_channel_live(client, chat_id):
             if "already in" in error_str or "already joined" in error_str: 
                 return True, "Already in the call"
             
-            # 🛠️ INSTANT RECOVERY: If the admin restarts the VC, drop the stale cache and wait for next loop to re-fetch
             if any(x in error_str for x in ["group call is invalid", "groupcall_invalid", "frozen", "method_invalid"]):
                 if hasattr(client, 'vc_call_cache'):
                     client.vc_call_cache.pop(chat_id, None) 
@@ -542,7 +537,6 @@ async def global_vc_manager():
             if not was_in_vc: 
                 logger.info(f"🎙️ [VC JOIN] 👤 [{bot_name}] ➜ Successfully joined VC in chat {chat_id}")
             client.in_vc[chat_id] = True
-            # 🛠️ AGGRESSIVE KEEP-ALIVE: Ping exactly every 15s to perfectly evade Telegram's 30s timeout!
             client.vc_cooldowns[chat_id] = datetime.now() + timedelta(seconds=15)
             
         elif "Flood wait error" in msg:
@@ -616,6 +610,73 @@ async def global_vc_manager():
             logger.error(f"VC Manager encountered a loop error: {e}")
         await asyncio.sleep(0.5)
 
+# --- USERBOT REACTION QUEUE WORKER ---
+async def client_reaction_worker(client):
+    """
+    Dedicated background worker per userbot.
+    Ensures sequential task processing with micro-sleeps to perfectly evade Telegram flood waits.
+    """
+    while not getattr(client, '_vc_stop_flag', False):
+        try:
+            task = await client.reaction_queue.get()
+            if task is None:
+                client.reaction_queue.task_done()
+                break
+                
+            event, my_index, view_limit, react_limit, chat_emoji_list = task
+            
+            if not client.is_connected():
+                client.reaction_queue.task_done()
+                continue
+
+            # 1. Sequential Views Processing
+            if view_limit == 0 or my_index < view_limit:
+                try: 
+                    await client(functions.messages.GetMessagesViewsRequest(peer=event.input_chat, id=[event.id], increment=True))
+                except Exception: 
+                    pass
+
+            # 2. Sequential Reactions Processing
+            if react_limit == 0 or my_index < react_limit:
+                if not hasattr(client, 'reacted_msgs'):
+                    client.reacted_msgs = set()
+                
+                cache_key = f"{event.chat_id}_{event.id}"
+                
+                # Strict Deduplication: Do not re-react to prevent toggle loops
+                if cache_key not in client.reacted_msgs:
+                    try:
+                        emoji = random.choice(chat_emoji_list) if chat_emoji_list else random.choice(EMOJIS)
+                        try:
+                            await client(functions.messages.SendReactionRequest(peer=event.input_chat, msg_id=event.id, reaction=[types.ReactionEmoji(emoticon=emoji)]))
+                        except TypeError:
+                            await client(functions.messages.SendReactionRequest(peer=event.input_chat, msg_id=event.id, reaction=emoji))
+                        
+                        client.reacted_msgs.add(cache_key)
+                        if len(client.reacted_msgs) > 500:
+                            client.reacted_msgs.remove(next(iter(client.reacted_msgs)))
+
+                        # Instantly print high-visibility cleaner Heroku log line
+                        log_reaction(client.me.first_name, client.me.id, emoji, event.chat_id, event.id, "AUTO")
+
+                    except FloodWaitError as e: 
+                        client.react_cooldown = datetime.now() + timedelta(seconds=e.seconds + 10)
+                        logger.warning(f"⏳ [{client.me.first_name}] Hit FloodWait during reaction worker. Backing off for {e.seconds}s.")
+                    except Exception:
+                        pass
+
+            client.reaction_queue.task_done()
+            
+            # PERFECT PACING DELAY: Spreads out successive reactions on the SAME bot session.
+            # This completely solves drops during multiple rapid post releases!
+            await asyncio.sleep(random.uniform(0.6, 0.8))
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in reaction queue worker: {e}")
+            await asyncio.sleep(1)
+
 async def start_userbot(session_string, user_id, name, startup_delay=0):
     if startup_delay > 0: await asyncio.sleep(startup_delay)
         
@@ -654,6 +715,11 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
         me = await client.get_me()
         client.me = me
         client._vc_stop_flag = False
+        
+        # --- INITIALIZE PER-BOT QUEUE AND WORKER ---
+        client.reaction_queue = asyncio.Queue()
+        client.worker_task = asyncio.create_task(client_reaction_worker(client))
+        
         active_userbots[me.id] = client
 
         # --- EVENT: AUTO REACTION & VIEW INCREMENT ---
@@ -670,51 +736,16 @@ async def start_userbot(session_string, user_id, name, startup_delay=0):
             active_list = list(active_userbots.keys())
             my_index = active_list.index(client.me.id) if client.me.id in active_list else 999
             
-            # Micro-stagger (e.g. 0.02s per bot) to trigger reactions in parallel with sub-second delivery
-            await asyncio.sleep(my_index * 0.02)
+            # Dyno IP protection: Tiny, structured stagger to make sure bots don't hit the channel API simultaneously
+            await asyncio.sleep(my_index * 0.05)
             
             view_limit = get_effective_limit(event.chat_id, "view_limit")
             react_limit = get_effective_limit(event.chat_id, "react_limit")
+            chat_emoji_list = get_effective_emoji_list(event.chat_id)
 
-            if view_limit == 0 or my_index < view_limit:
-                try: 
-                    # Use event.input_chat for instant raw peer resolution
-                    await client(functions.messages.GetMessagesViewsRequest(peer=event.input_chat, id=[event.id], increment=True))
-                except Exception: pass
-
-            if react_limit == 0 or my_index < react_limit:
-                if not hasattr(client, 'reacted_msgs'):
-                    client.reacted_msgs = set()
-                
-                # Compound Key to track uniquely: Chat_MessageID
-                cache_key = f"{event.chat_id}_{event.id}"
-                
-                # STRICT GUARD: Ensure 1 user 1 reaction per auto-post trigger
-                if cache_key in client.reacted_msgs:
-                    return
-
-                try:
-                    chat_emoji_list = get_effective_emoji_list(event.chat_id)
-                    emoji = random.choice(chat_emoji_list) if chat_emoji_list else random.choice(EMOJIS)
-                    
-                    try:
-                        # Lightning speed optimization: Using pre-resolved event.input_chat directly
-                        await client(functions.messages.SendReactionRequest(peer=event.input_chat, msg_id=event.id, reaction=[types.ReactionEmoji(emoticon=emoji)]))
-                    except TypeError:
-                        await client(functions.messages.SendReactionRequest(peer=event.input_chat, msg_id=event.id, reaction=emoji))
-                    
-                    # Store in unique bounded reaction cache
-                    client.reacted_msgs.add(cache_key)
-                    if len(client.reacted_msgs) > 500:
-                        client.reacted_msgs.remove(next(iter(client.reacted_msgs)))
-
-                    # Clean Logging in Heroku Console
-                    log_reaction(client.me.first_name, client.me.id, emoji, event.chat_id, event.id, "AUTO")
-
-                except FloodWaitError as e: 
-                    client.react_cooldown = datetime.now() + timedelta(seconds=e.seconds + 10)
-                except Exception as e:
-                    pass
+            # Enqueue task for sequential background worker processing (Instantly returns control)
+            task_payload = (event, my_index, view_limit, react_limit, chat_emoji_list)
+            await client.reaction_queue.put(task_payload)
 
         return client
 
@@ -726,6 +757,10 @@ async def reload_userbots():
     for uid, client in list(active_userbots.items()):
         try:
             client._vc_stop_flag = True
+            if hasattr(client, 'worker_task') and client.worker_task:
+                client.worker_task.cancel()
+            if hasattr(client, 'reaction_queue'):
+                await client.reaction_queue.put(None)
             if client.is_connected(): await client.disconnect()
         except: pass
     active_userbots.clear()
@@ -856,7 +891,6 @@ async def process_callback_data(event, data):
         await event.edit(f"✅ **Settings Updated!**\nTarget `{chat_id_target}` emoji set to: **RANDOM**",
                             buttons=[[Button.inline("🔙 Back to Chat Settings", f"t_menu_{chat_id_target}")]])
         return
-
 
     # --- OWNER-ONLY ROUTES PROTECTION ---
     if data in ["remove_menu", "clean_bots", "admin_menu", "add_admin_step", "rm_admin_menu", "clear_tgt", "set_limit_view", "set_limit_react", "set_limit_join"]:
@@ -1232,7 +1266,7 @@ async def process_callback_data(event, data):
                 text += f"{status} **{s.get('name', 'Unknown')}** (`{s['user_id']}`)\n"
             
             if len(text) > 4000:
-                text = text[:4000] + "\n...(truncated due to limit)"
+                text = text[:4000] + "\n...(truncated)"
                 
             await event.respond(text, buttons=[[Button.inline("🔙 Back", b"menu_bots")]])
         except Exception as e:
@@ -1250,6 +1284,8 @@ async def process_callback_data(event, data):
         if uid in active_userbots:
             client = active_userbots[uid]
             client._vc_stop_flag = True
+            if hasattr(client, 'worker_task') and client.worker_task:
+                client.worker_task.cancel()
             try: await client.disconnect()
             except: pass
             del active_userbots[uid]
@@ -1570,6 +1606,10 @@ async def shutdown(sig, loop):
     tasks = []
     for client in active_userbots.values():
         client._vc_stop_flag = True
+        if hasattr(client, 'worker_task') and client.worker_task:
+            client.worker_task.cancel()
+        if hasattr(client, 'reaction_queue'):
+            await client.reaction_queue.put(None)
         tasks.append(client.disconnect())
     
     if tasks:
