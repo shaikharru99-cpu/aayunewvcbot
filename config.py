@@ -12,7 +12,7 @@ BOT_TOKEN = "8978249219:AAFz5VrmMNE_yFHeuD6y_vbi9r0BlIh5_UE"
 MONGO_URL = "mongodb+srv://ArruBhai:NVPavPk34HtQ6RW1@cluster0.hhlnxa9.mongodb.net/?appName=Cluster0"
 
 # Configure the database name (Used to store sessions and settings)
-DB_NAME = "telegram_bot_db223344" 
+DB_NAME = "telegram_bot_db135" 
 
 # --- ASSETS ---
 WELCOME_IMAGE = "https://i.ibb.co/ch8W4QmS/ARLTools.png"
